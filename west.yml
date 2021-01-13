@@ -43,9 +43,10 @@ manifest:
     - name: civetweb
       revision: e6903b80c09d17cd1a8bb32e40080005558aad29
       path: modules/lib/civetweb
-    - name: esp-idf
-      revision: 6835bfc741bf15e98fb7971293913f770df6081f
-      path: modules/hal/esp-idf
+    - name: hal_espressif
+      west-commands: west/west-commands.yml
+      revision: 895d99ed0902e8f3ddde7bdeb3a1fe2fa875b005
+      path: modules/hal/espressif
     - name: fatfs
       revision: 1d1fcc725aa1cb3c32f366e0c53d7490d0fe1109
       path: modules/fs/fatfs
@@ -68,7 +69,7 @@ manifest:
       revision: a1ec761014740a08699720298dd37ad4da360840
       path: modules/hal/microchip
     - name: hal_silabs
-      revision: 69c3e1e6e167767cb75aa2b468df4ade05988cdb
+      revision: 6bb4a17a2f94a39eba295dd55dbeae6f6c4c9b1b
       path: modules/hal/silabs
     - name: hal_st
       revision: b52fdbf4b62439be9fab9bb4bae9690a42d2fb14
@@ -117,7 +118,7 @@ manifest:
       revision: 38c79a447e4a47d413b4e8d34448316a5cece77c
       path: modules/debug/segger
     - name: sof
-      revision: ed0b4b930c40b1d0c044653658f6e9211848fdec
+      revision: 9e75cce8bc1c649672931a4d772b2411a890804b
       path: modules/audio/sof
     - name: tinycbor
       path: modules/lib/tinycbor
