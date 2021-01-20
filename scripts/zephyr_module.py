@@ -33,6 +33,9 @@ METADATA_SCHEMA = '''
 # the build system.
 type: map
 mapping:
+  name:
+    required: false
+    type: str
   build:
     required: false
     type: map
@@ -43,6 +46,14 @@ mapping:
       kconfig:
         required: false
         type: str
+      cmake-ext:
+        required: false
+        type: bool
+        default: false
+      kconfig-ext:
+        required: false
+        type: bool
+        default: false
       depends:
         required: false
         type: seq
@@ -62,6 +73,9 @@ mapping:
             required: false
             type: str
           arch_root:
+            required: false
+            type: str
+          module_ext_root:
             required: false
             type: str
   tests:
@@ -113,11 +127,13 @@ def process_module(module):
             sys.exit('ERROR: Malformed "build" section in file: {}\n{}'
                      .format(module_yml.as_posix(), e))
 
+        meta['name'] = meta.get('name', module_path.name)
         return meta
 
     if Path(module_path.joinpath('zephyr/CMakeLists.txt')).is_file() and \
        Path(module_path.joinpath('zephyr/Kconfig')).is_file():
-        return {'build': {'cmake': 'zephyr', 'kconfig': 'zephyr/Kconfig'}}
+        return {'name': module_path.name,
+                'build': {'cmake': 'zephyr', 'kconfig': 'zephyr/Kconfig'}}
 
     return None
 
@@ -126,6 +142,14 @@ def process_cmake(module, meta):
     section = meta.get('build', dict())
     module_path = PurePath(module)
     module_yml = module_path.joinpath('zephyr/module.yml')
+
+    cmake_extern = section.get('cmake-ext', False)
+    if cmake_extern:
+        return('\"{}\":\"{}\":\"{}\"\n'
+               .format(meta['name'],
+                       module_path.as_posix(),
+                       "${ZEPHYR_" + meta['name'].upper() + "_CMAKE_DIR}"))
+
     cmake_setting = section.get('cmake', None)
     if not validate_setting(cmake_setting, module, 'CMakeLists.txt'):
         sys.exit('ERROR: "cmake" key in {} has folder value "{}" which '
@@ -136,13 +160,14 @@ def process_cmake(module, meta):
     cmake_file = os.path.join(cmake_path, 'CMakeLists.txt')
     if os.path.isfile(cmake_file):
         return('\"{}\":\"{}\":\"{}\"\n'
-               .format(module_path.name,
+               .format(meta['name'],
                        module_path.as_posix(),
                        Path(cmake_path).resolve().as_posix()))
     else:
         return('\"{}\":\"{}\":\"\"\n'
-               .format(module_path.name,
+               .format(meta['name'],
                        module_path.as_posix()))
+
 
 def process_settings(module, meta):
     section = meta.get('build', dict())
@@ -150,19 +175,34 @@ def process_settings(module, meta):
     out_text = ""
 
     if build_settings is not None:
-        for root in ['board', 'dts', 'soc', 'arch']:
+        for root in ['board', 'dts', 'soc', 'arch', 'module_ext']:
             setting = build_settings.get(root+'_root', None)
             if setting is not None:
                 root_path = PurePath(module) / setting
-                out_text += f'"{root.upper()}_ROOT":"{root_path.as_posix()}"\n'
+                out_text += f'"{root.upper()}_ROOT":'
+                out_text += f'"{root_path.as_posix()}"\n'
 
     return out_text
+
+
+def kconfig_snippet(name, path, kconfig_file=None):
+    snippet = (f'menu "{name} ({path})"',
+               f'osource "{kconfig_file.resolve().as_posix()}"' if kconfig_file
+               else f'osource "$(ZEPHYR_{name.upper()}_KCONFIG)"',
+               f'config ZEPHYR_{name.upper()}_MODULE',
+               '	bool',
+               '	default y',
+               'endmenu\n')
+    return '\n'.join(snippet)
 
 
 def process_kconfig(module, meta):
     section = meta.get('build', dict())
     module_path = PurePath(module)
     module_yml = module_path.joinpath('zephyr/module.yml')
+    kconfig_extern = section.get('kconfig-ext', False)
+    if kconfig_extern:
+        return kconfig_snippet(meta['name'], module_path)
 
     kconfig_setting = section.get('kconfig', None)
     if not validate_setting(kconfig_setting, module):
@@ -172,10 +212,10 @@ def process_kconfig(module, meta):
 
     kconfig_file = os.path.join(module, kconfig_setting or 'zephyr/Kconfig')
     if os.path.isfile(kconfig_file):
-        return 'osource "{}"\n\n'.format(Path(kconfig_file)
-                                         .resolve().as_posix())
+        return kconfig_snippet(meta['name'], module_path, Path(kconfig_file))
     else:
         return ""
+
 
 def process_twister(module, meta):
 
@@ -280,7 +320,7 @@ def main():
     while start_modules:
         node = start_modules.pop(0)
         sorted_modules.append(node)
-        node_name = PurePath(node.project).name
+        node_name = node.meta['name']
         to_remove = []
         for module in dep_modules:
             if node_name in module.depends:
