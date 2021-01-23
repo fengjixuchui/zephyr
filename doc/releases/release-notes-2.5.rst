@@ -62,6 +62,9 @@ API Changes
   parameter, allowing to specify the maximum retransmission count of the
   confirmable message.
 
+* The ``CONFIG_BT_CTLR_CODED_PHY`` is now disabled by default for builds
+  combining both Bluetooth host and controller.
+
 Deprecated in this release
 ==========================
 
@@ -304,6 +307,12 @@ Libraries / Subsystems
 
 * Debug
 
+* DFU
+
+ * boot: Reworked using MCUBoot's bootutil_public library which allow to use
+   API implementation already provided by MCUboot codebase and remove
+   zephyr's own implementations.
+
 HALs
 ****
 
@@ -342,6 +351,8 @@ MCUBoot
   * Configure logging to LOG_MINIMAL by default.
   * boot: cleanup NXP MPU configuration before boot.
   * Fix nokogiri<=1.11.0.rc4 vulnerability.
+  * bootutil_public library was extracted as code which is common API for
+    MCUboot and the DFU application, see ``CONFIG_MCUBOOT_BOOTUTIL_LIB``
 
 * imgtool
 
