@@ -605,6 +605,14 @@ class DeviceHandler(Handler):
         ser_fileno = ser.fileno()
         readlist = [halt_fileno, ser_fileno]
 
+        if self.coverage:
+            # Set capture_coverage to True to indicate that right after
+            # test results we should get coverage data, otherwise we exit
+            # from the test.
+            harness.capture_coverage = True
+
+        ser.flush()
+
         while ser.isOpen():
             readable, _, _ = select.select(readlist, [], [], self.timeout)
 
@@ -635,35 +643,34 @@ class DeviceHandler(Handler):
                 harness.handle(sl.rstrip())
 
             if harness.state:
-                ser.close()
-                break
+                if not harness.capture_coverage:
+                    ser.close()
+                    break
 
         log_out_fp.close()
 
+    def get_available_device(self, instance):
+        device = instance.platform.name
+        for d in self.suite.duts:
+            if d.platform == device and d.available and (d.serial or d.serial_pty):
+                d.available = 0
+                d.counter += 1
+                return d
+
+        return None
+
     def device_is_available(self, instance):
-        ret = False
         device = instance.platform.name
         fixture = instance.testcase.harness_config.get("fixture")
         for d in self.suite.duts:
             if fixture and fixture not in d.fixtures:
                 continue
             if d.platform == device and d.available and (d.serial or d.serial_pty):
-                ret = True
-                break
-
-        return ret
-
-    def get_available_device(self, instance):
-        ret = None
-        device = instance.platform.name
-        for d in self.suite.duts:
-            if d.platform == device and d.available and (d.serial or d.serial_pty):
                 d.available = 0
                 d.counter += 1
-                ret = d
-                break
+                return d
 
-        return ret
+        return None
 
     def make_device_available(self, serial):
         for d in self.suite.duts:
@@ -686,15 +693,15 @@ class DeviceHandler(Handler):
         out_state = "failed"
         runner = None
 
-        while not self.device_is_available(self.instance):
+        hardware = self.device_is_available(self.instance)
+        while not hardware:
             logger.debug("Waiting for device {} to become available".format(self.instance.platform.name))
             time.sleep(1)
+            hardware = self.device_is_available(self.instance)
 
-        hardware = self.get_available_device(self.instance)
-        if hardware:
-            runner = hardware.runner or self.suite.west_runner
-
+        runner = hardware.runner or self.suite.west_runner
         serial_pty = hardware.serial_pty
+
         ser_pty_process = None
         if serial_pty:
             master, slave = pty.openpty()
@@ -2037,6 +2044,37 @@ class CMake():
 
         return results
 
+    @staticmethod
+    def run_cmake_script(args=[]):
+
+        logger.debug("Running cmake script %s" % (args[0]))
+
+        cmake_args = ["-D{}".format(a.replace('"', '')) for a in args[1:]]
+        cmake_args.extend(['-P', args[0]])
+
+        logger.debug("Calling cmake with arguments: {}".format(cmake_args))
+        cmake = shutil.which('cmake')
+        cmd = [cmake] + cmake_args
+
+        kwargs = dict()
+        kwargs['stdout'] = subprocess.PIPE
+        # CMake sends the output of message() to stderr unless it's STATUS
+        kwargs['stderr'] = subprocess.STDOUT
+
+        p = subprocess.Popen(cmd, **kwargs)
+        out, _ = p.communicate()
+
+        if p.returncode == 0:
+            msg = "Finished running  %s" % (args[0])
+            logger.debug(msg)
+            results = {"returncode": p.returncode, "msg": msg, "stdout": out}
+
+        else:
+            logger.error("Cmake script failure: %s" % (args[0]))
+            results = {"returncode": p.returncode}
+
+        return results
+
 
 class FilterBuilder(CMake):
 
@@ -2204,6 +2242,7 @@ class ProjectBuilder(FilterBuilder):
             instance.handler.call_make_run = True
         elif self.device_testing:
             instance.handler = DeviceHandler(instance, "device")
+            instance.handler.coverage = self.coverage
         elif instance.platform.simulation == "nsim":
             if find_executable("nsimdrv"):
                 instance.handler = BinaryHandler(instance, "nsim")
@@ -2559,6 +2598,7 @@ class TestSuite(DisablePyTestCollectionMixin):
         self.testcases = {}
         self.platforms = []
         self.selected_platforms = []
+        self.filtered_platforms = []
         self.default_platforms = []
         self.outdir = os.path.abspath(outdir)
         self.discards = {}
@@ -2728,9 +2768,9 @@ class TestSuite(DisablePyTestCollectionMixin):
             logger.info("In total {} test cases were executed, {} skipped on {} out of total {} platforms ({:02.2f}%)".format(
                 results.cases - results.skipped_cases,
                 results.skipped_cases,
-                len(self.selected_platforms),
+                len(self.filtered_platforms),
                 self.total_platforms,
-                (100 * len(self.selected_platforms) / len(self.platforms))
+                (100 * len(self.filtered_platforms) / len(self.platforms))
             ))
 
         logger.info(f"{Fore.GREEN}{run}{Fore.RESET} test configurations executed on platforms, \
@@ -2809,19 +2849,17 @@ class TestSuite(DisablePyTestCollectionMixin):
 
     @staticmethod
     def get_toolchain():
-        toolchain = os.environ.get("ZEPHYR_TOOLCHAIN_VARIANT", None) or \
-                    os.environ.get("ZEPHYR_GCC_VARIANT", None)
-
-        if toolchain == "gccarmemb":
-            # Remove this translation when gccarmemb is no longer supported.
-            toolchain = "gnuarmemb"
+        toolchain_script = Path(ZEPHYR_BASE) / Path('cmake/verify-toolchain.cmake')
+        result = CMake.run_cmake_script([toolchain_script, "FORMAT=json"])
 
         try:
-            if not toolchain:
+            if result['returncode']:
                 raise TwisterRuntimeError("E: Variable ZEPHYR_TOOLCHAIN_VARIANT is not defined")
         except Exception as e:
             print(str(e))
             sys.exit(2)
+        toolchain = json.loads(result['stdout'])['ZEPHYR_TOOLCHAIN_VARIANT']
+        logger.info(f"Using '{toolchain}' toolchain.")
 
         return toolchain
 
@@ -3142,6 +3180,9 @@ class TestSuite(DisablePyTestCollectionMixin):
             instance.reason = self.discards[instance]
             instance.status = "skipped"
             instance.fill_results_by_status()
+
+        self.filtered_platforms = set(p.platform.name for p in self.instances.values()
+                                      if p.status != "skipped" )
 
         return discards
 
@@ -3892,6 +3933,7 @@ class HardwareMap:
             runner = dut.get('runner')
             serial = dut.get('serial')
             product = dut.get('product')
+            fixtures = dut.get('fixtures', [])
             new_dut = DUT(platform=platform,
                           product=product,
                           runner=runner,
@@ -3901,6 +3943,7 @@ class HardwareMap:
                           pre_script=pre_script,
                           post_script=post_script,
                           post_flash_script=post_flash_script)
+            new_dut.fixtures = fixtures
             new_dut.counter = 0
             self.duts.append(new_dut)
 

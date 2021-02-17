@@ -67,6 +67,17 @@ static LoRaMacEventInfoStatus_t last_mlme_confirm_status;
 static LoRaMacEventInfoStatus_t last_mcps_indication_status;
 static LoRaMacEventInfoStatus_t last_mlme_indication_status;
 
+static uint8_t (*getBatteryLevelUser)(void);
+
+static uint8_t getBatteryLevelLocal(void)
+{
+	if (getBatteryLevelUser != NULL) {
+		return getBatteryLevelUser();
+	}
+
+	return 255;
+}
+
 static void OnMacProcessNotify(void)
 {
 	LoRaMacProcess();
@@ -222,10 +233,16 @@ static LoRaMacStatus_t lorawan_join_abp(
 
 int lorawan_join(const struct lorawan_join_config *join_cfg)
 {
+	MibRequestConfirm_t mib_req;
 	LoRaMacStatus_t status;
 	int ret = 0;
 
 	k_mutex_lock(&lorawan_join_mutex, K_FOREVER);
+
+	/* MIB_PUBLIC_NETWORK powers on the radio and does not turn it off */
+	mib_req.Type = MIB_PUBLIC_NETWORK;
+	mib_req.Param.EnablePublicNetwork = true;
+	LoRaMacMibSetRequestConfirm(&mib_req);
 
 	if (join_cfg->mode == LORAWAN_ACT_OTAA) {
 		status = lorawan_join_otaa(join_cfg);
@@ -436,6 +453,17 @@ out:
 	return ret;
 }
 
+int lorawan_set_battery_level_callback(uint8_t (*battery_lvl_cb)(void))
+{
+	if (battery_lvl_cb == NULL) {
+		return -EINVAL;
+	}
+
+	getBatteryLevelUser = battery_lvl_cb;
+
+	return 0;
+}
+
 int lorawan_start(void)
 {
 	LoRaMacStatus_t status;
@@ -460,10 +488,6 @@ int lorawan_start(void)
 	mib_req.Param.SystemMaxRxError = CONFIG_LORAWAN_SYSTEM_MAX_RX_ERROR;
 	LoRaMacMibSetRequestConfirm(&mib_req);
 
-	mib_req.Type = MIB_PUBLIC_NETWORK;
-	mib_req.Param.EnablePublicNetwork = true;
-	LoRaMacMibSetRequestConfirm(&mib_req);
-
 	return 0;
 }
 
@@ -475,7 +499,7 @@ static int lorawan_init(const struct device *dev)
 	macPrimitives.MacMcpsIndication = McpsIndication;
 	macPrimitives.MacMlmeConfirm = MlmeConfirm;
 	macPrimitives.MacMlmeIndication = MlmeIndication;
-	macCallbacks.GetBatteryLevel = NULL;
+	macCallbacks.GetBatteryLevel = getBatteryLevelLocal;
 	macCallbacks.GetTemperatureLevel = NULL;
 	macCallbacks.NvmContextChange = NULL;
 	macCallbacks.MacProcessNotify = OnMacProcessNotify;
