@@ -81,30 +81,46 @@ static inline bool is_thread_dummy(struct k_thread *thread)
 }
 #endif
 
-bool z_is_t1_higher_prio_than_t2(struct k_thread *thread_1,
-				 struct k_thread *thread_2)
+/*
+ * Return value same as e.g. memcmp
+ * > 0 -> thread 1 priority  > thread 2 priority
+ * = 0 -> thread 1 priority == thread 2 priority
+ * < 0 -> thread 1 priority  < thread 2 priority
+ * Do not rely on the actual value returned aside from the above.
+ * (Again, like memcmp.)
+ */
+int32_t z_sched_prio_cmp(struct k_thread *thread_1,
+	struct k_thread *thread_2)
 {
-	if (thread_1->base.prio < thread_2->base.prio) {
-		return true;
+	/* `prio` is <32b, so the below cannot overflow. */
+	int32_t b1 = thread_1->base.prio;
+	int32_t b2 = thread_2->base.prio;
+
+	if (b1 != b2) {
+		return b2 - b1;
 	}
 
 #ifdef CONFIG_SCHED_DEADLINE
 	/* If we assume all deadlines live within the same "half" of
 	 * the 32 bit modulus space (this is a documented API rule),
-	 * then the latest dealine in the queue minus the earliest is
+	 * then the latest deadline in the queue minus the earliest is
 	 * guaranteed to be (2's complement) non-negative.  We can
 	 * leverage that to compare the values without having to check
 	 * the current time.
 	 */
-	if (thread_1->base.prio == thread_2->base.prio) {
-		int32_t d1 = thread_1->base.prio_deadline;
-		int32_t d2 = thread_2->base.prio_deadline;
+	uint32_t d1 = thread_1->base.prio_deadline;
+	uint32_t d2 = thread_2->base.prio_deadline;
 
-		return (d2 - d1) >= 0;
+	if (d1 != d2) {
+		/* Sooner deadline means higher effective priority.
+		 * Doing the calculation with unsigned types and casting
+		 * to signed isn't perfect, but at least reduces this
+		 * from UB on overflow to impdef.
+		 */
+		return (int32_t) (d2 - d1);
 	}
 #endif
-
-	return false;
+	return 0;
 }
 
 static ALWAYS_INLINE bool should_preempt(struct k_thread *thread,
@@ -277,12 +293,10 @@ static ALWAYS_INLINE struct k_thread *next_up(void)
 	}
 
 	if (active) {
-		bool curr_wins = z_is_t1_higher_prio_than_t2(_current, thread);
-		bool th_wins = z_is_t1_higher_prio_than_t2(thread, _current);
-		bool tie = (!curr_wins && !th_wins);
+		int32_t cmp = z_sched_prio_cmp(_current, thread);
 
 		/* Ties only switch if state says we yielded */
-		if (curr_wins || (tie && !_current_cpu->swap_ok)) {
+		if ((cmp > 0) || ((cmp == 0) && !_current_cpu->swap_ok)) {
 			thread = _current;
 		}
 
@@ -944,7 +958,7 @@ ALWAYS_INLINE void z_priq_dumb_add(sys_dlist_t *pq, struct k_thread *thread)
 	__ASSERT_NO_MSG(!z_is_idle_thread_object(thread));
 
 	SYS_DLIST_FOR_EACH_CONTAINER(pq, t, base.qnode_dlist) {
-		if (z_is_t1_higher_prio_than_t2(thread, t)) {
+		if (z_sched_prio_cmp(thread, t) > 0) {
 			sys_dlist_insert(&t->base.qnode_dlist,
 					 &thread->base.qnode_dlist);
 			return;
@@ -975,13 +989,16 @@ struct k_thread *z_priq_dumb_best(sys_dlist_t *pq)
 bool z_priq_rb_lessthan(struct rbnode *a, struct rbnode *b)
 {
 	struct k_thread *thread_a, *thread_b;
+	int32_t cmp;
 
 	thread_a = CONTAINER_OF(a, struct k_thread, base.qnode_rb);
 	thread_b = CONTAINER_OF(b, struct k_thread, base.qnode_rb);
 
-	if (z_is_t1_higher_prio_than_t2(thread_a, thread_b)) {
+	cmp = z_sched_prio_cmp(thread_a, thread_b);
+
+	if (cmp > 0) {
 		return true;
-	} else if (z_is_t1_higher_prio_than_t2(thread_b, thread_a)) {
+	} else if (cmp < 0) {
 		return false;
 	} else {
 		return thread_a->base.order_key < thread_b->base.order_key
@@ -1192,17 +1209,19 @@ void z_impl_k_yield(void)
 	__ASSERT(!arch_is_in_isr(), "");
 
 	if (!z_is_idle_thread_object(_current)) {
-		LOCKED(&sched_spinlock) {
-			if (!IS_ENABLED(CONFIG_SMP) ||
-			    z_is_thread_queued(_current)) {
-				dequeue_thread(&_kernel.ready_q.runq,
-						 _current);
-			}
-			queue_thread(&_kernel.ready_q.runq, _current);
-			update_cache(1);
+		k_spinlock_key_t key = k_spin_lock(&sched_spinlock);
+
+		if (!IS_ENABLED(CONFIG_SMP) ||
+			z_is_thread_queued(_current)) {
+			dequeue_thread(&_kernel.ready_q.runq,
+					_current);
 		}
+		queue_thread(&_kernel.ready_q.runq, _current);
+		update_cache(1);
+		z_swap(&sched_spinlock, key);
+	} else {
+		z_swap_unlocked();
 	}
-	z_swap_unlocked();
 }
 
 #ifdef CONFIG_USERSPACE
@@ -1606,3 +1625,39 @@ static inline void z_vrfy_k_thread_abort(k_tid_t thread)
 }
 #include <syscalls/k_thread_abort_mrsh.c>
 #endif /* CONFIG_USERSPACE */
+
+/*
+ * future scheduler.h API implementations
+ */
+bool z_sched_wake(_wait_q_t *wait_q, int swap_retval, void *swap_data)
+{
+	struct k_thread *thread;
+	bool ret = false;
+
+	LOCKED(&sched_spinlock) {
+		thread = _priq_wait_best(&wait_q->waitq);
+
+		if (thread != NULL) {
+			z_thread_return_value_set_with_data(thread,
+							    swap_retval,
+							    swap_data);
+			unpend_thread_no_timeout(thread);
+			(void)z_abort_thread_timeout(thread);
+			ready_thread(thread);
+			ret = true;
+		}
+	}
+
+	return ret;
+}
+
+int z_sched_wait(struct k_spinlock *lock, k_spinlock_key_t key,
+		 _wait_q_t *wait_q, k_timeout_t timeout, void **data)
+{
+	int ret = z_pend_curr(lock, key, wait_q, timeout);
+
+	if (data != NULL) {
+		*data = _current->base.swap_data;
+	}
+	return ret;
+}

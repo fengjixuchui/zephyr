@@ -26,21 +26,28 @@
 
 #include "util/util.h"
 #include "util/memq.h"
+
 #include "hal/ecb.h"
 #include "hal/ccm.h"
+
 #include "ll_sw/pdu.h"
+
 #include "ll_sw/lll.h"
+#include "lll/lll_adv_types.h"
 #include "ll_sw/lll_adv.h"
+#include "lll/lll_adv_pdu.h"
 #include "ll_sw/lll_sync_iso.h"
 #include "ll_sw/lll_scan.h"
 #include "ll_sw/lll_sync.h"
 #include "ll_sw/lll_conn.h"
 #include "ll_sw/lll_conn_iso.h"
+
 #include "ll_sw/ull_adv_types.h"
 #include "ll_sw/ull_scan_types.h"
 #include "ll_sw/ull_sync_types.h"
 #include "ll_sw/ull_conn_types.h"
 #include "ll_sw/ull_conn_iso_types.h"
+
 #include "ll.h"
 #include "ll_feat.h"
 #include "ll_settings.h"
@@ -2432,8 +2439,8 @@ static void le_read_tx_power(struct net_buf *buf, struct net_buf **evt)
 	ll_tx_pwr_get(&rp->min_tx_power, &rp->max_tx_power);
 }
 
-#if IS_ENABLED(CONFIG_BT_CTLR_DF)
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
+#if defined(CONFIG_BT_CTLR_DF)
+#if defined(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
 static void le_df_set_cl_cte_tx_params(struct net_buf *buf,
 				       struct net_buf **evt)
 {
@@ -2481,7 +2488,7 @@ static void le_df_set_cl_cte_enable(struct net_buf *buf, struct net_buf **evt)
 }
 #endif /* CONFIG_BT_CTLR_DF_ADV_CTE_TX */
 
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_CONN_CTE_RSP)
+#if defined(CONFIG_BT_CTLR_DF_CONN_CTE_RSP)
 static void le_df_set_conn_cte_tx_params(struct net_buf *buf,
 					 struct net_buf **evt)
 {
@@ -3594,8 +3601,8 @@ static int controller_cmd_handle(uint16_t  ocf, struct net_buf *cmd,
 		le_read_tx_power(cmd, evt);
 		break;
 
-#if IS_ENABLED(CONFIG_BT_CTLR_DF)
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
+#if defined(CONFIG_BT_CTLR_DF)
+#if defined(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
 	case BT_OCF(BT_HCI_OP_LE_SET_CL_CTE_TX_PARAMS):
 		le_df_set_cl_cte_tx_params(cmd, evt);
 		break;
@@ -3606,7 +3613,7 @@ static int controller_cmd_handle(uint16_t  ocf, struct net_buf *cmd,
 	case BT_OCF(BT_HCI_OP_LE_READ_ANT_INFO):
 		le_df_read_ant_inf(cmd, evt);
 		break;
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_CONN_CTE_RSP)
+#if defined(CONFIG_BT_CTLR_DF_CONN_CTE_RSP)
 	case BT_OCF(BT_HCI_OP_LE_SET_CONN_CTE_TX_PARAMS):
 		le_df_set_conn_cte_tx_params(cmd, evt);
 		break;

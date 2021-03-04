@@ -20,21 +20,22 @@
 #include "ticker/ticker.h"
 
 #include "pdu.h"
-#include "ll.h"
+
 #include "lll.h"
-#include "lll_vendor.h"
 #include "lll_clock.h"
+#include "lll/lll_vendor.h"
+#include "lll/lll_adv_types.h"
 #include "lll_adv.h"
+#include "lll/lll_adv_pdu.h"
 #include "lll_adv_aux.h"
-#include "lll_adv_internal.h"
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
-#include "lll_df_internal.h"
-#endif /* CONFIG_BT_CTLR_DF_ADV_CTE_TX */
+#include "lll/lll_df_types.h"
 
 #include "ull_adv_types.h"
 
 #include "ull_internal.h"
 #include "ull_adv_internal.h"
+
+#include "ll.h"
 
 #define BT_DBG_ENABLED IS_ENABLED(CONFIG_BT_DEBUG_HCI_DRIVER)
 #define LOG_MODULE_NAME bt_ctlr_ull_adv_aux
@@ -361,7 +362,7 @@ uint8_t ll_adv_aux_set_remove(uint8_t handle)
 	}
 #endif /* CONFIG_BT_CTLR_ADV_PERIODIC */
 
-#if IS_ENABLED(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
+#if defined(CONFIG_BT_CTLR_DF_ADV_CTE_TX)
 	if (adv->df_cfg) {
 		if (adv->df_cfg->is_enabled) {
 			return BT_HCI_ERR_CMD_DISALLOWED;
