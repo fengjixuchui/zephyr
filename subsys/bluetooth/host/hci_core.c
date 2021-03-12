@@ -664,7 +664,16 @@ static int le_set_private_addr(uint8_t id)
 	}
 
 	le_rpa_timeout_submit();
-	return err;
+
+	if (err) {
+		return err;
+	}
+
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+		BT_INFO("RPA: %s", bt_addr_str(&rpa));
+	}
+
+	return 0;
 }
 
 static int le_adv_set_private_addr(struct bt_le_ext_adv *adv)
@@ -711,7 +720,15 @@ static int le_adv_set_private_addr(struct bt_le_ext_adv *adv)
 		le_rpa_timeout_submit();
 	}
 
-	return err;
+	if (err) {
+		return err;
+	}
+
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+		BT_INFO("RPA: %s", bt_addr_str(&rpa));
+	}
+
+	return 0;
 }
 #else
 static int le_set_private_addr(uint8_t id)
@@ -726,7 +743,16 @@ static int le_set_private_addr(uint8_t id)
 
 	BT_ADDR_SET_NRPA(&nrpa);
 
-	return set_random_address(&nrpa);
+	err = set_random_address(&nrpa);
+	if (err)  {
+		return err;
+	}
+
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+		BT_INFO("NRPA: %s", bt_addr_str(&nrpa));
+	}
+
+	return 0;
 }
 
 static int le_adv_set_private_addr(struct bt_le_ext_adv *adv)
@@ -741,7 +767,16 @@ static int le_adv_set_private_addr(struct bt_le_ext_adv *adv)
 
 	BT_ADDR_SET_NRPA(&nrpa);
 
-	return set_adv_random_address(adv, &nrpa);
+	err = set_adv_random_address(adv, &nrpa);
+	if (err) {
+		return err;
+	}
+
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+		BT_INFO("NRPA: %s", bt_addr_str(&nrpa));
+	}
+
+	return 0;
 }
 #endif /* defined(CONFIG_BT_PRIVACY) */
 
@@ -4702,6 +4737,47 @@ static void le_past_received(struct net_buf *buf)
 	}
 }
 #endif /* CONFIG_BT_CONN */
+
+#if defined(CONFIG_BT_ISO_BROADCAST)
+static void hci_le_biginfo_adv_report(struct net_buf *buf)
+{
+	struct bt_hci_evt_le_biginfo_adv_report *evt;
+	struct bt_le_per_adv_sync *per_adv_sync;
+	struct bt_le_per_adv_sync_cb *listener;
+	struct bt_iso_biginfo biginfo;
+
+	evt = net_buf_pull_mem(buf, sizeof(*evt));
+
+	per_adv_sync = get_per_adv_sync(sys_le16_to_cpu(evt->sync_handle));
+
+	if (!per_adv_sync) {
+		BT_ERR("Unknown handle 0x%04X for periodic advertising report",
+		       sys_le16_to_cpu(evt->sync_handle));
+		return;
+	}
+
+	biginfo.addr = &per_adv_sync->addr;
+	biginfo.sid = per_adv_sync->sid;
+	biginfo.num_bis = evt->num_bis;
+	biginfo.sub_evt_count = evt->nse;
+	biginfo.iso_interval = sys_le16_to_cpu(evt->iso_interval);
+	biginfo.burst_number = evt->bn;
+	biginfo.offset = evt->pto;
+	biginfo.rep_count = evt->irc;
+	biginfo.max_pdu = sys_le16_to_cpu(evt->max_pdu);
+	biginfo.sdu_interval = sys_get_le24(evt->sdu_interval);
+	biginfo.max_sdu = sys_le16_to_cpu(evt->max_sdu);
+	biginfo.phy = evt->phy;
+	biginfo.framing = evt->framing;
+	biginfo.encryption = evt->encryption ? true : false;
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&pa_sync_cbs, listener, node) {
+		if (listener->biginfo) {
+			listener->biginfo(per_adv_sync, &biginfo);
+		}
+	}
+}
+#endif /* defined(CONFIG_BT_ISO_BROADCAST) */
 #endif /* defined(CONFIG_BT_PER_ADV_SYNC) */
 #endif /* defined(CONFIG_BT_EXT_ADV) */
 
@@ -4990,6 +5066,23 @@ static const struct event_handler meta_events[] = {
 		      sizeof(struct bt_hci_evt_le_cis_established)),
 	EVENT_HANDLER(BT_HCI_EVT_LE_CIS_REQ, hci_le_cis_req,
 		      sizeof(struct bt_hci_evt_le_cis_req)),
+#if defined(CONFIG_BT_ISO_BROADCAST)
+	EVENT_HANDLER(BT_HCI_EVT_LE_BIG_COMPLETE,
+		      hci_le_big_complete,
+		      sizeof(struct bt_hci_evt_le_big_complete)),
+	EVENT_HANDLER(BT_HCI_EVT_LE_BIG_TERMINATE,
+		      hci_le_big_termimate,
+		      sizeof(struct bt_hci_evt_le_big_terminate)),
+	EVENT_HANDLER(BT_HCI_EVT_LE_BIG_SYNC_ESTABLISHED,
+		      hci_le_big_sync_established,
+		      sizeof(struct bt_hci_evt_le_big_sync_established)),
+	EVENT_HANDLER(BT_HCI_EVT_LE_BIG_SYNC_LOST,
+		      hci_le_big_sync_lost,
+		      sizeof(struct bt_hci_evt_le_big_sync_lost)),
+	EVENT_HANDLER(BT_HCI_EVT_LE_BIGINFO_ADV_REPORT,
+		      hci_le_biginfo_adv_report,
+		      sizeof(struct bt_hci_evt_le_biginfo_adv_report)),
+#endif /* (CONFIG_BT_ISO_BROADCAST) */
 #endif /* (CONFIG_BT_ISO) */
 };
 
@@ -5543,6 +5636,20 @@ static int le_set_event_mask(void)
 		}
 	}
 
+	/* Enable BIS events for broadcaster and/or receiver */
+	if (IS_ENABLED(CONFIG_BT_ISO_BROADCAST) &&
+	    BT_FEAT_LE_BIS(bt_dev.le.features)) {
+		if (BT_FEAT_LE_ISO_BROADCASTER(bt_dev.le.features)) {
+			mask |= BT_EVT_MASK_LE_BIG_COMPLETE;
+			mask |= BT_EVT_MASK_LE_BIG_TERMINATED;
+		}
+		if (BT_FEAT_LE_SYNC_RECEIVER(bt_dev.le.features)) {
+			mask |= BT_EVT_MASK_LE_BIG_SYNC_ESTABLISHED;
+			mask |= BT_EVT_MASK_LE_BIG_SYNC_LOST;
+			mask |= BT_EVT_MASK_LE_BIGINFO_ADV_REPORT;
+		}
+	}
+
 	sys_put_le64(mask, cp_mask->events);
 	return bt_hci_cmd_send_sync(BT_HCI_OP_LE_SET_EVENT_MASK, buf, NULL);
 }
@@ -6017,9 +6124,32 @@ static void bt_dev_show_info(void)
 	BT_INFO("Identity%s: %s", bt_dev.id_count > 1 ? "[0]" : "",
 		bt_addr_le_str(&bt_dev.id_addr[0]));
 
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+#if defined(CONFIG_BT_PRIVACY)
+		uint8_t irk[16];
+
+		sys_memcpy_swap(irk, bt_dev.irk[0], 16);
+		BT_INFO("IRK%s: 0x%s", bt_dev.id_count > 1 ? "[0]" : "",
+			bt_hex(irk, 16));
+#endif
+	}
+
 	for (i = 1; i < bt_dev.id_count; i++) {
 		BT_INFO("Identity[%d]: %s",
 			i, bt_addr_le_str(&bt_dev.id_addr[i]));
+
+		if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+#if defined(CONFIG_BT_PRIVACY)
+			uint8_t irk[16];
+
+			sys_memcpy_swap(irk, bt_dev.irk[i], 16);
+			BT_INFO("IRK[%d]: 0x%s", i, bt_hex(irk, 16));
+#endif
+		}
+	}
+
+	if (IS_ENABLED(CONFIG_BT_LOG_SNIFFER_INFO)) {
+		bt_keys_foreach(BT_KEYS_ALL, bt_keys_show_sniffer_info, NULL);
 	}
 
 	BT_INFO("HCI: version %s (0x%02x) revision 0x%04x, manufacturer 0x%04x",

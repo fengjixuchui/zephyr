@@ -61,9 +61,9 @@ SECTION_FUNC(TEXT, _isr_wrapper)
 	 * Call the ISR. Unmask and mask again the IRQs to support nested
 	 * exception handlers
 	 */
-	msr	daifclr, #(DAIFSET_IRQ)
+	msr	daifclr, #(DAIFCLR_IRQ_BIT)
 	blr	x3
-	msr	daifset, #(DAIFSET_IRQ)
+	msr	daifset, #(DAIFSET_IRQ_BIT)
 
 	/* Signal end-of-interrupt */
 	ldp	x0, x1, [sp], #16
@@ -81,6 +81,7 @@ spurious_continue:
 
 	/* if (--(_kernel->nested) != 0) exit */
 	dec_nest_counter x0, x1
+
 	bne	exit
 
 	/*
